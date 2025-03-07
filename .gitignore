@@ -36,3 +36,6 @@ override.tf.json
 .terraformrc
 terraform.rc
 secrets.txt
+.env
+issues_fixes.md
+add-ons

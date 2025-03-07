@@ -1,4 +1,13 @@
 
+
+terraform {
+  required_providers {
+    kubectl = {
+      source  = "gavinbunney/kubectl"
+      version = ">= 1.7.0"
+    }
+  }
+}
 provider "kubernetes" {
   host                   = data.aws_eks_cluster.cluster.endpoint
   cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
@@ -52,12 +61,7 @@ resource "aws_iam_role_policy_attachment" "AmazonEKSCloudWatchMetricsPolicy" {
 // Comment in order to run other tf scripts else it'll throw error it already exists in AWS Console
 resource "aws_cloudwatch_log_group" "eks_cluster" {
   name              = "/aws/eks/${var.name}-${var.environment}/cluster"
-  retention_in_days = 7
-
-#   lifecycle {
-#     prevent_destroy = true
-#   }
-
+  retention_in_days = 14
   tags = {
     Name        = "${var.name}-${var.environment}-eks-cloudwatch-log-group"
     Environment = var.environment
@@ -169,6 +173,91 @@ data "aws_ssm_parameter" "core_src_ami_release_version" {
 #   name = "/aws/service/bottlerocket/aws-k8s-${aws_eks_cluster.core_src.version}/x86_64/latest/image_id"
 }
 
+
+resource "aws_security_group" "eks_node_group_sg" {
+  name        = "${var.name}-${var.environment}-eks-node-group-sg"
+  description = "Custom SG for EKS nodes"
+  vpc_id      = var.vpc_id
+
+  // Allow node-to-node communication (within the same SG)
+  ingress {
+    description = "Allow node-to-node communication"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    self        = true
+  }
+
+  // Allow control plane to webhook port (9443)
+  ingress {
+    description                   = "Allow access from control plane to webhook port"
+    from_port                     = 9443
+    to_port                       = 9443
+    protocol                      = "tcp"
+    security_groups               = [aws_eks_cluster.core_src.vpc_config[0].cluster_security_group_id]
+  }
+
+  // Allow control plane to nodes (API server, kubelet)
+  ingress {
+    description                   = "Allow control plane to nodes (1025-65535)"
+    from_port                     = 1025
+    to_port                       = 65535
+    protocol                      = "tcp"
+    security_groups               = [aws_eks_cluster.core_src.vpc_config[0].cluster_security_group_id]
+  }
+
+  // Allow control plane to nodes on 443 (for webhooks, etc.)
+  ingress {
+    description                   = "Allow control plane to nodes (443)"
+    from_port                     = 443
+    to_port                       = 443
+    protocol                      = "tcp"
+    security_groups               = [aws_eks_cluster.core_src.vpc_config[0].cluster_security_group_id]
+  }
+
+  // Allow all outbound traffic
+  egress {
+    description = "Allow all outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.name}-${var.environment}-eks-node-group-sg"
+  }
+}
+
+
+# resource "aws_launch_template" "eks_node_group_lt" {
+#   name_prefix   = "${var.name}-${var.environment}-eks-node-group-lt-"
+
+#   block_device_mappings {
+#     device_name = "/dev/xvda"
+#     ebs {
+#       volume_size = 50
+#       volume_type = "gp3"
+#     }
+#   }
+
+#   network_interfaces {
+#     security_groups = [aws_security_group.eks_node_group_sg.id]
+#   }
+
+#   tag_specifications {
+#     resource_type = "instance"
+#     tags = {
+#       Name = "${var.name}-${var.environment}-eks-node"
+#     }
+#   }
+
+#   # lifecycle {
+#   #   create_before_destroy = true
+#   # }
+# }
+
+
 //Node group -- on_demand for production workload
 resource "aws_eks_node_group" "on_demand" {
   cluster_name    = aws_eks_cluster.core_src.name
@@ -178,7 +267,7 @@ resource "aws_eks_node_group" "on_demand" {
 
 
   scaling_config {
-    desired_size = 1
+    desired_size = 2
     max_size     = 2
     min_size     = 1
   }
@@ -190,26 +279,20 @@ resource "aws_eks_node_group" "on_demand" {
   version = aws_eks_cluster.core_src.version
   release_version = nonsensitive(data.aws_ssm_parameter.core_src_ami_release_version.value)
 
+  # launch_template {
+  #   id      = aws_launch_template.eks_node_group_lt.id
+  #   version = "$Latest"
+  # }
 
   update_config {
     max_unavailable = 1
   }
 
-    #   taint {
-    #     key    = "workload"
-    #     value  = "production"
-    #     effect = "NO_SCHEDULE"
-    #   }
-
-    #   labels = {
-    #     node-type = "on-demand"
-    #   }
-
   // Enable autoscaling through Node Group
   // Optional: Allow external changes without Terraform plan difference
-  lifecycle {
-    ignore_changes = [scaling_config[0].desired_size]
-  }
+  # lifecycle {
+  #   ignore_changes = [scaling_config[0].desired_size]
+  # }
 
   tags = {
     Name        = "${var.name}-${var.environment}-eks-node-group-production"
@@ -282,10 +365,6 @@ resource "aws_iam_role_policy_attachment" "test_attach" {
   role       = aws_iam_role.test_oidc.name
   policy_arn = aws_iam_policy.test-policy.arn
 }
-
-// output "test_policy_arn" {
-//   value = aws_iam_role.test_oidc.arn
-// }
 
 // Creating a separate kubeconfig file
 data "template_file" "kubeconfig" {
@@ -499,10 +578,6 @@ resource "aws_iam_role_policy_attachment" "aws_load_balancer_controller_attach" 
   policy_arn = aws_iam_policy.karpenter_controller.arn
 }
 
-# data "aws_iam_instance_profile" "karpenter" {
-#   name = "daba-qa-eks-node-group-role-karpenter"
-# }
-
 resource "aws_iam_instance_profile" "karpenter" {
   name = "KarpenterNodeInstanceProfile_${var.name}-${var.environment}"
   role = aws_iam_role.eks_node_group_role_karpenter.name
@@ -530,27 +605,179 @@ resource "helm_release" "karpenter" {
   chart      = "karpenter"
   version    = "v0.16.3"
 
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.karpenter_controller.arn
-  }
-
-  set {
-    name  = "clusterName"
-    value = "${var.name}-${var.environment}"
-  }
-
-  set {
-    name  = "clusterEndpoint"
-    value = data.aws_eks_cluster.cluster.endpoint
-  }
-
-  set {
-    name  = "aws.defaultInstanceProfile"
-    value = aws_iam_instance_profile.karpenter.name
-  }
+  values = [
+    yamlencode({
+      serviceAccount = {
+        annotations = {
+          "eks.amazonaws.com/role-arn" = "${aws_iam_role.karpenter_controller.arn}"
+        }
+      }
+      clusterName            = "${var.name}-${var.environment}"
+      clusterEndpoint        = "${data.aws_eks_cluster.cluster.endpoint}"
+      aws = {
+        defaultInstanceProfile = "${aws_iam_instance_profile.karpenter.name}"
+      }
+    })
+  ]
 
   depends_on = [
     aws_eks_node_group.on_demand
   ]
 }
+
+########################################## Nginx Ingress Controller ##########################################
+# resource "helm_release" "ingress_nginx" {
+#   namespace  = "ingress-nginx"
+#   create_namespace = true
+
+#   name       = "ingress-nginx"
+#   repository = "https://kubernetes.github.io/ingress-nginx"
+#   chart      = "ingress-nginx"
+#   version    = "4.12.0"       # HELM CHART VES
+
+#   values = [
+#     yamlencode({
+#       controller = {
+#         replicaCount = 3
+#         service = {
+#           annotations = {
+#             "service.beta.kubernetes.io/aws-load-balancer-type" = "nlb"
+#             "service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled" = "true"
+#             "service.beta.kubernetes.io/aws-load-balancer-backend-protocol" = "tcp"
+#           }
+#         }
+#       }
+#     })
+#   ]
+
+#   depends_on = [
+#     aws_eks_node_group.on_demand
+#   ]
+
+# }
+
+
+
+
+# ALB Controller IAM Policies
+resource "aws_iam_policy" "alb_controller_policy" {
+  name        = "AWSLoadBalancerControllerIAMPolicy-${var.name}-${var.environment}"
+  policy      = file("${path.module}/policies/iam_policy.json")
+}
+
+resource "aws_iam_policy" "alb_controller_additional_policy" {
+  name        = "AWSLoadBalancerControllerAdditionalIAMPolicy-${var.name}-${var.environment}"
+  policy      = file("${path.module}/policies/iam_policy_v1_to_v2_additional.json")
+}
+
+resource "aws_iam_role" "alb_controller_role" {
+  name = "AmazonEKSLoadBalancerControllerRole-${var.name}-${var.environment}"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = "${aws_iam_openid_connect_provider.core_src.arn}"
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace("${aws_eks_cluster.core_src.identity[0].oidc[0].issuer}", "https://", "")}:sub" = "system:serviceaccount:kube-system:aws-load-balancer-controller"
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "attach_alb_policy" {
+  role       = aws_iam_role.alb_controller_role.name
+  policy_arn = aws_iam_policy.alb_controller_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "attach_additional_policy" {
+  role       = aws_iam_role.alb_controller_role.name
+  policy_arn = aws_iam_policy.alb_controller_additional_policy.arn
+}
+
+resource "kubernetes_service_account" "alb_controller_sa" {
+  metadata {
+    name      = "aws-load-balancer-controller"
+    namespace = "kube-system"
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.alb_controller_role.arn
+    }
+  }
+}
+
+resource "aws_security_group" "alb_sg" {
+  name        = "alb-sg-${var.name}-${var.environment}"
+  description = "Security group for ALB"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "alb-sg"
+    ENV = "${var.name}-${var.environment}"
+  }
+}
+
+resource "helm_release" "alb_controller" {
+  name       = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  version    = "1.11.0" 
+
+  set {
+    name  = "vpcId"
+    value = "${var.vpc_id}"
+  }
+
+  set {
+    name  = "autoDiscoverAwsRegion"
+    value = "true"
+  }
+
+  set {
+    name  = "autoDiscoverAwsVpcID"
+    value = "true"
+  }
+  set {
+    name  = "clusterName"
+    value = aws_eks_cluster.core_src.name
+  }
+
+  set {
+    name  = "serviceAccount.create"
+    value = "false"
+  }
+
+  set {
+    name  = "serviceAccount.name"
+    value = "${kubernetes_service_account.alb_controller_sa.metadata[0].name}"
+  }
+
+  set {
+    name  = "createCRD"
+    value = "true"
+  }
+
+  depends_on = [
+    kubernetes_service_account.alb_controller_sa
+  ]
+}
+

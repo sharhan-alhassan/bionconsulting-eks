@@ -18,6 +18,7 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = "2.36.0"
     }
+
   }
 }
 
@@ -57,11 +58,12 @@ module "eks" {
   private_subnets = module.vpc.private_subnets
   public_subnets  = module.vpc.public_subnets
   kubeconfig_path = var.kubeconfig_path
+  vpc_id          = module.vpc.vpc_id
 }
 
 
 output "vpc_id" {
-  value = module.vpc.id
+  value = module.vpc.vpc_id
 }
 
 output "public_subnets" {

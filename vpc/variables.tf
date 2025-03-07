@@ -42,5 +42,3 @@ variable "k8s_version" {
   description = "kubernetes version"
   type = string
 }
-
-

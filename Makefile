@@ -1,53 +1,20 @@
-# ENV ?= staging
-# BACKEND_DIR = ./backends
-# VARS_DIR = ./environments
-# BACKEND_FILE = $(BACKEND_DIR)/backend-$(ENV).tf
-# VARS_FILE = $(VARS_DIR)/$(ENV).tfvars
-
-# .PHONY: init workspace fmt validate plan apply clean
-
-# ## Initialize Terraform and copy backend
-# init:
-# 	@if [ "$(ENV)" != "staging" ] && [ "$(ENV)" != "combined" ] && [ "$(ENV)" != "production" ]; then \
-# 		echo "Usage: make [init|workspace|plan|apply] ENV=[staging|combined|production]"; \
-# 		exit 1; \
-# 	fi
-# 	@echo "Deploying to $(ENV) environment..."
-# 	@echo "Copying $(BACKEND_FILE) to backend.tf..."
-# 	cp $(BACKEND_FILE) backend.tf
-# 	@echo "Initializing Terraform..."
-# 	terraform init
-
-# ## Select or create workspace
-# workspace:
-# 	@terraform workspace select $(ENV) || terraform workspace new $(ENV)
-
-# ## Format and validate
-# fmt:
-# 	@terraform fmt
-# 	@terraform validate
-
-# ## Terraform Plan
-# plan:
-# 	@terraform plan -var-file=$(VARS_FILE) -out=tfplan
-
-# ## Terraform Apply
-# apply:
-# 	@terraform apply -var-file=$(VARS_FILE) -auto-approve
-
-# ## Terraform Destroy
-# destroy:
-# 	@terraform destroy -var-file=$(VARS_FILE) -auto-approve
-# 	rm -f backend.tf
-
-# ## Clean backend file (optional)
-# clean:
-# 	rm -f backend.tf
-
-
 
 # Default environment if not provided (can be staging, combined, or production)
-ENV ?= staging
+ENV_FILE ?=
+
+# Load variables from .env
+## How to run - make ENV_FILE=.env create-external-dns
+
+ifeq ($(ENV_FILE),)
+    ENV ?= staging
+else
+    ifeq ("$(wildcard $(ENV_FILE))","")
+        $(error ENV_FILE '$(ENV_FILE)' does not exist)
+    endif
+    include $(ENV_FILE)
+    export $(shell sed 's/=.*//' $(ENV_FILE))
+endif
+
 
 # Directories and file paths for backends and variable files
 BACKEND_DIR = ./backends
@@ -95,6 +62,11 @@ workspace:
 fmt:
 	@terraform fmt
 	@terraform validate
+
+## Refresh Terraform configuration
+refresh:
+	@terraform refresh -var-file=$(VARS_FILE)
+
 
 ## Terraform Plan
 plan:
@@ -167,3 +139,7 @@ create-certmanager:
 # create-issuer: Apply issuer configuration for Let's Encrypt.
 create-issuer:
 	cd add-ons/certmanager && kubectl apply -f ./issuer && cd ../../
+
+create-argocd:
+	kubectl create namespace argocd
+	kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml

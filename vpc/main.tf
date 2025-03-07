@@ -124,17 +124,14 @@ resource "aws_flow_log" "core_src" {
   log_destination = aws_cloudwatch_log_group.vpc.arn
   traffic_type    = "ALL"
   vpc_id          = aws_vpc.core_src.id
+
+  depends_on = [aws_cloudwatch_log_group.vpc]
 }
 
 resource "aws_cloudwatch_log_group" "vpc" {
   name              = "/aws/vpc/${var.name}-${var.environment}/flow"
-  retention_in_days = 7
-  
-  // Use lifecycle block to prevent re-creation
-#   lifecycle {
-#     prevent_destroy = true
-#   }
-
+  retention_in_days = 14
+  # skip_destroy = false
   tags = {
     Name        = "${var.name}-${var.environment}-vpc-cloudwatch-log-group"
     Environment = var.environment
